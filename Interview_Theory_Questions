@@ -1,0 +1,86 @@
+Q: Let's say you have a partitioned table, where one of the partition has huge amount of data and it is getting stuck. how do you handle this situation and what measures do you take?
+
+-- optimization technique
+confirm of the delay is due to the  data skewness
+first is to identify the reason for the huge amount of the data is it due to the skew ness of the data, 
+check if it is possible to filter out the data so that the data entering into the partition can be moved down
+
+do a repartitioning/   to merge / divide the data more uniformly 
+did not use coalesce as we hade to increase parallisom
+if there is a possibility to change the partiiton for a more uniform data load , change the partitioning options
+instead of a a single partioned column try to do it over multiple columns eg //// date, date+ states
+change the parititoned column eg instead of date do it over states
+enable z -ordering if we are using delatea tables  Parquet format with Z-ordering to improve pruning.
+
+OPTIMIZE user_events
+WHERE event_date >= '2024-01-01'
+ZORDER BY (user_id, country)--  it’s a Delta Lake/Databricks feature
+
+
+
+monitor the partition size if it still giving issues then better change the executor memory/ driver memory etc
+
+
+df.filter("partition_col = 'heavy_partition'")
+  .repartition(100)
+  .write.mode("overwrite").insertInto("table")
+
+
+
+PARTITIONED BY (DATE) CLUSTERED BY (user_id) INTO 32 BUCKETS
+
+
+
+
+
+
+Q: How do you handle the CDC events during data ingestion? what are some of the best practices used?
+
+Ans: change data capture as the acronym saya its identifies the changes in the dimensationd ata over the time
+
+I store raw events for auditability, and use merge strategies in systems like Delta Lake to apply updates and deletes. 
+
+
+Best practices I follow include 
+  timestamp-based ordering, 
+  deduplication by key,  -- deduped_df = latest_df.dropDuplicates(["id", "updated_at"])
+  schema evolution support, --
+
+cdc_df.write \
+    .format("delta") \
+    .option("mergeSchema", "true") \
+    .mode("append") \
+    .save("/delta/user_table")
+
+  and checkpoint tracking to ensure reliability and consistency.”--- checkpoint loction during write
+
+works on insert--> update--> delete 
+append only: i am not intrested in maintaining any hisptory .
+cdc_df.write.mode("append").parquet("s3://bucket/raw_events/")
+
+
+i am again not maintaining any hisptry i will delete old data from the target/ update
+
+MERGE INTO user_table AS target
+USING cdc_events AS source
+ON target.user_id = source.user_id
+WHEN MATCHED AND source.op = 'DELETE' THEN DELETE
+WHEN MATCHED AND source.op = 'UPDATE' THEN UPDATE SET *
+WHEN NOT MATCHED AND source.op = 'INSERT' THEN INSERT *
+
+
+from delta.tables import DeltaTable
+
+target = DeltaTable.forPath(spark, "/path/to/user_table")
+
+target.alias("target").merge(
+    source.alias("source"),
+    "target.id = source.id"
+).whenMatchedUpdate(
+    condition="source.op = 'update'",
+    set={"name": "source.name", "email": "source.email"}
+).whenMatchedDelete(
+    condition="source.op = 'delete'"
+).whenNotMatchedInsertAll().execute()
+
+
